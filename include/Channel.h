@@ -46,6 +46,7 @@ public:
     //防止当Channel被手动remove掉，Channel还在执行回调操作
     void tie(const std::shared_ptr<void>&);
     int fd() const { return fd_; }
+    int events() const { return events_; }
     //poller给channel设置
     void set_revents(int revt) { revents_ = revt; }
 

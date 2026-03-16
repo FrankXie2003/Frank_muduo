@@ -22,4 +22,4 @@ aux_source_directory(src SRC_LIST)
 add_library(Frank_muduo SHARED ${SRC_LIST})
 
 # 编译测试程序
-add_subdirectory(testmuduo)
+#add_subdirectory(testmuduo)

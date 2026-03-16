@@ -47,7 +47,7 @@ public:
     void tie(const std::shared_ptr<void>&);
     int fd() const { return fd_; }
     //poller给channel设置
-    int set_revents(int revt) { revents_ = revt; }
+    void set_revents(int revt) { revents_ = revt; }
 
     // 设置fd相应的事件状态
     // 将 kReadEvent 标志位添加到 events_ 中

@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <memory>
 //防止一个线程创建多个EventLoop thread_local
 __thread EventLoop* t_loopInThisThread = nullptr;
 
@@ -98,6 +99,41 @@ void EventLoop::quit()
     }
 }
 
+//在当前loop中执行cb
+void EventLoop::runInLoop(Functor cb)
+{
+    if(isInLoopThread)//在当前loop线程中执行cb
+    {
+        cb();
+    }
+    else//在非当前loop中执行cb，就需要唤醒loop所在线程，执行cb
+    {
+        queueInLoop(cb);
+    }
+}
+
+//把cb放入队列中，唤醒loop所在的线程执行cb
+void EventLoop::queueInLoop(Functor cb)
+{
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        pendingFunctors_.emplace_back(cb);
+    }
+
+    //唤醒相应的，需要执行上面回调操作的loop的线程了
+    //|| callingPendingFunctors_的意思是：当前loop正在执行回调，但是loop又有了新的回调
+    /*
+    *callingPendingFunctors_ 的含义：
+    *"我正在执行回调，这期间如果有新任务进来，
+    *必须立即唤醒自己，不然新任务要等到下次 epoll_wait 超时才能执行"
+    */
+    if(!isInLoopThread || callingPendingFunctors_)
+    {
+        wakeup();
+    }
+}
+
+
 void EventLoop::handleRead()
 {
     uint64_t one = 1;
@@ -106,4 +142,50 @@ void EventLoop::handleRead()
     {
         LOG_ERROR(" EventLoop::handleRead() reads %d bytes instead of 8",n);
     }
+}
+
+//唤醒loop所在的线程  向wakeupfd_写一个数据
+//wakeupChannel就发生读事件，当前loop线程就会被唤醒
+void EventLoop::wakeup()
+{
+    uint64_t one = 1;
+    ssize_t n =write(wakeupFd_,&one,sizeof(one));
+    if(n != sizeof(one))
+    {
+        LOG_ERROR("EventLoop::wakeup() writes %lu bytes instead of 8 \n",n);
+    }
+}
+
+//EventLoop方法 => Poller方法
+void EventLoop::updateChannel(Channel* channel)
+{
+    poller_->updateChannel(channel);
+}
+
+void EventLoop::removeChannel(Channel* channel)
+{
+    poller_->removeChannel(channel);
+}
+
+bool EventLoop::hasChannel(Channel* channel)
+{
+    return poller_->hasChannel(channel);
+}
+
+void EventLoop::doPendingFunctors()
+{
+    std::vector<Functor> functors;
+    callingPendingFunctors_  = true;
+
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        functors.swap(pendingFunctors_);
+    }
+
+    for(const Functor &functor : functors)
+    {
+        functor();
+    }
+
+    callingPendingFunctors_ = false;
 }

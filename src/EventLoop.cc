@@ -32,7 +32,6 @@ EventLoop::EventLoop()
     , poller_(Poller::newDefaultPoller(this))
     , wakeupFd_(createEventfd())
     , wakeupChannel_(new Channel(this,wakeupFd_))
-    , currentActiveChannel_(nullptr)
 {
     LOG_DEBUG("EventLoop created %p in thread %d \n",this,threadId_);
     if(t_loopInThisThread)
@@ -56,6 +55,47 @@ EventLoop::~EventLoop()
     wakeupChannel_->remove();
     ::close(wakeupFd_);
     t_loopInThisThread = nullptr;
+}
+
+//开启事件循环
+void EventLoop::loop()
+{
+    looping_ = true;
+    quit_ = false;
+
+    LOG_INFO("EventLoop %p start looping \n",this);
+
+    while(!quit)
+    {
+        activeChannels_.clear();
+        //监听两类fd，一种是client的fd，一种是wakeupfd
+        pollReturnTime_ = poller_->poll(kPollTimeMs,&activeChannels_);
+        for(Channel* channel : activeChannels_)
+        {
+            //Poller监听哪些channel发生事件了，然后上报给Eventloop，通知channel处理相应的事件
+            channel->handleEvent(pollReturnTime_);
+        }
+        //执行当前EventLoop事件循环需要处理的回调操作
+        //mainloop事先注册一个回调cb(需要subloop来执行)
+        //wakeup subloop后，执行下面的方法
+        //执行之前mainloop注册的cb操作
+        doPendingFunctors();
+    }
+    LOG_INFO("EventLoop %p stop looping \n",this);
+    looping_ = false;
+}
+
+//退出事件循环 1.loop在自己的线程中调用quit
+//2.在非loop的线程中，调用loop的quit
+void EventLoop::quit()
+{
+    quit_ = true;
+    //如果是在其他线程中调用的quit
+    //在一个subloop(worker)中，调用了mainloop(I/O)的quit
+    if(!isInLoopThread)
+    {
+        wakeup();
+    }
 }
 
 void EventLoop::handleRead()

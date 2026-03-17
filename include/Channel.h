@@ -25,20 +25,20 @@ public:
     void handleEvent(Timestamp receiveTime);
 
     //设置回调函数对象
-    void setReadCallbcak(ReadEventCallback cb)
+    void setReadCallback(ReadEventCallback cb)
     {
         readCallback_ = cb;
     }
         
-    void setWriteCallbcak(EventCallback cb)
+    void setWriteCallback(EventCallback cb)
     {
         writeCallback_ = cb;
     }
-    void setCloseCallbcak(EventCallback cb)
+    void setCloseCallback(EventCallback cb)
     {
         closeCallback_ = cb;
     }
-    void setErrorCallbcak(EventCallback cb)
+    void setErrorCallback(EventCallback cb)
     {
         errorCallback_ = cb;
     }

@@ -65,7 +65,7 @@ private:
     std::unique_ptr<Channel> wakeupChannel_;
 
     ChannelList activeChannels_;
-    Channel* currentActiveChannel_;
+    //Channel* currentActiveChannel_;
 
     //标识当前loop是否有需要执行的回调操作
     std::atomic_bool callingPendingFunctors_;

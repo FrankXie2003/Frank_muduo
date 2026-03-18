@@ -28,11 +28,11 @@ int createEventfd()
 EventLoop::EventLoop()
     : looping_(false)
     , quit_(false)
-    , callingPendingFunctors_(false)
     , threadId_(CurrentThread::tid())
     , poller_(Poller::newDefaultPoller(this))
     , wakeupFd_(createEventfd())
     , wakeupChannel_(new Channel(this,wakeupFd_))
+    , callingPendingFunctors_(false)
 {
     LOG_DEBUG("EventLoop created %p in thread %d \n",this,threadId_);
     if(t_loopInThisThread)
@@ -66,7 +66,7 @@ void EventLoop::loop()
 
     LOG_INFO("EventLoop %p start looping \n",this);
 
-    while(!quit)
+    while(!quit_)
     {
         activeChannels_.clear();
         //监听两类fd，一种是client的fd，一种是wakeupfd
@@ -93,7 +93,7 @@ void EventLoop::quit()
     quit_ = true;
     //如果是在其他线程中调用的quit
     //在一个subloop(worker)中，调用了mainloop(I/O)的quit
-    if(!isInLoopThread)
+    if(!isInLoopThread())
     {
         wakeup();
     }
@@ -102,7 +102,7 @@ void EventLoop::quit()
 //在当前loop中执行cb
 void EventLoop::runInLoop(Functor cb)
 {
-    if(isInLoopThread)//在当前loop线程中执行cb
+    if(isInLoopThread())//在当前loop线程中执行cb
     {
         cb();
     }
@@ -127,7 +127,7 @@ void EventLoop::queueInLoop(Functor cb)
     *"我正在执行回调，这期间如果有新任务进来，
     *必须立即唤醒自己，不然新任务要等到下次 epoll_wait 超时才能执行"
     */
-    if(!isInLoopThread || callingPendingFunctors_)
+    if(!isInLoopThread() || callingPendingFunctors_)
     {
         wakeup();
     }
@@ -140,7 +140,7 @@ void EventLoop::handleRead()
     ssize_t n = read(wakeupFd_,&one,sizeof(one));
     if( n != sizeof(one) )
     {
-        LOG_ERROR(" EventLoop::handleRead() reads %d bytes instead of 8",n);
+        LOG_ERROR(" EventLoop::handleRead() reads %ld bytes instead of 8",n);
     }
 }
 

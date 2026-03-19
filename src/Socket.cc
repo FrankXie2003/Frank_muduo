@@ -31,11 +31,9 @@ void Socket::bindAddress(const InetAddress& localaddr)
 void Socket::listen()
 {
     /*
-    int bind(int sockfd, const struct sockaddr* addr, socklen_t addrlen);
-    sockfd — 要绑定的 socket fd
-    addr — 要绑定的本地地址（IP + Port）
-    addrlen — addr 结构体的大小
-    返回 0 成功，-1 失败
+    int listen(int sockfd, int backlog);
+    sockfd_ (sockfd) — 要监听的套接字文件描述符，必须是已经 bind 过地址的 socket
+    1024 (backlog) — 全连接队列（accept queue）的最大长度。当客户端完成三次握手后会进入这个队列，等待 accept 取走。超过这个数量的新连接会被内核丢弃或返回 RST
     */
     if(0 != ::listen(sockfd_,1024))
     {

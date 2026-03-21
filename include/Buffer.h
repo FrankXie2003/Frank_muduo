@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <sys/types.h>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -46,7 +47,7 @@ public:
         if(len < readableBytes())
         {
             // 应用只读取了刻度缓冲区数据的一部分，就是len
-            //喊剩下readerIndex_ += len -> writerIndex_
+            // 还剩下readerIndex_ += len -> writerIndex_
             readerIndex_ += len;
         }
         else // len == readableBytes
@@ -105,6 +106,8 @@ public:
 
     //从fd上读取数据
     ssize_t readFd(int fd, int* saveErrno);
+    //通过fd发送数据
+    ssize_t writeFd(int fd,int* saveErrno);
 
 private:
     char* begin()

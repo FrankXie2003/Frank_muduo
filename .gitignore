@@ -8,6 +8,7 @@ build/
 *.so
 
 # IDE 和系统配置文件
+.cache/
 .claudee/
 .vscode/
 .idea/

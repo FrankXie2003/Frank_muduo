@@ -4,8 +4,10 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <unistd.h>
 
-/*从fd上读取数据 Poller工作在LT模式
+/*
+从fd上读取数据 Poller工作在LT模式
 *Buffer缓冲区是有大小的，但是从fd上读数据的时候，却不知道tcp数据最终大小
 */
 //用到了readv(writev),分散读，集中写
@@ -41,6 +43,18 @@ ssize_t Buffer::readFd(int fd, int* saveErrno)
         writerIndex_ = buffer_.size();
         // 把 extrabuf 的数据追加进 Buffer
         append(extrabuf, n - writable); 
+    }
+    return n;
+}
+
+ssize_t Buffer::writeFd(int fd,int* saveErrno)
+{
+    //writableBytes() 是剩余可写空间，但你要发送的是已有数据，应该用 readableBytes()
+    //writeFd 要做的事 = 把可读区域的数据发到网络上，所以用 readableBytes()
+    ssize_t n =::write(fd, peek(), readableBytes());
+    if(n < 0)
+    {
+        *saveErrno = errno;
     }
     return n;
 }

@@ -5,7 +5,26 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+/*
+1. 接收缓冲区（inputBuffer_）
 
+网络 → socket → readFd() → inputBuffer_ → 应用层读取
+                              ↑
+                         readableBytes()
+                    （已接收，待应用层读取）
+数据从 socket 读入 inputBuffer_
+readableBytes() = 已经接收到的数据，等待应用层读取
+应用层调用 retrieve() 读取数据
+2. 发送缓冲区（outputBuffer_）
+
+应用层写入 → outputBuffer_ → writeFd() → socket → 网络
+              ↑
+         readableBytes()
+      （已写入，待发送到socket）
+应用层把数据写入 outputBuffer_（调用 append()）
+readableBytes() = 已经写入缓冲区的数据，等待发送到 socket
+调用 writeFd() 把数据从 outputBuffer_ 读出来，发送到 socket
+*/
 //网络库底层的缓冲器类型定义
 class Buffer
 {

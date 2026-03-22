@@ -6,12 +6,15 @@
 #include "EventLoop.h"
 
 #include <asm-generic/socket.h>
+#include <cerrno>
+#include <cstddef>
 #include <functional>
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <strings.h>
 #include <netinet/tcp.h>
+#include <string>
 
 static EventLoop* CheckLoopNotNull(EventLoop* loop)
 {   
@@ -59,6 +62,145 @@ TcpConnection::~TcpConnection()
 {
     LOG_INFO("TcpConnection::dtor[%s] at fd=%d state=%d \n",
         name_.c_str(),channel_->fd(),(int)state_);
+}
+
+void TcpConnection::send(const std::string& buf)
+{
+    if(state_ == kConnected)
+    {
+        if(loop_->isInLoopThread())
+        {
+            sendInLoop(buf.c_str(),buf.size());
+        }
+        else
+        {
+            loop_->runInLoop(std::bind(
+                &TcpConnection::sendInLoop,
+                this,
+                buf.c_str(),
+                buf.size()
+            ));
+        }
+    }
+}
+
+//发送数据 应用写得快 而内核发送数据慢，需要把待发送数据写入缓冲区，而且设置了水位回调
+void TcpConnection::sendInLoop(const void* data,size_t len)
+{
+    // 本次成功写入 socket 的字节数
+    ssize_t nwrote = 0;
+    // 还剩多少字节没写入
+    size_t remaining = len;
+    bool faultError = false;
+
+    //之前调用过该connection的shutdown，不能再发送了
+    if(state_ == kDisconnected)
+    {
+        LOG_ERROR("disconnected,give up writing!");
+        return;
+    }
+    
+    //表示channel_第一次开始写数据，而且缓冲区没有待发送数据
+    //如果 channel_->isWriting() 为 true，说明之前有数据没发完，正在等待写事件
+    //如果 outputBuffer_ 不为空，说明有数据在排队，必须保证顺序（先发缓冲区里的，再发新的）
+    if(!channel_->isWriting() && outputBuffer_.readableBytes() == 0)
+    {
+        nwrote = ::write(channel_->fd(),data,len);
+        if(nwrote > 0)
+        {
+            remaining = len - nwrote;
+            //说明一次就写完了，太好了！触发 writeCompleteCallback_，通知用户"数据发送完成"
+            if(remaining == 0 && writeCompleteCallback_)
+            {
+                //既然在这里数据全部发送完成，就不用再给channel设置epollout事件了
+                loop_->queueInLoop(std::bind(
+                    writeCompleteCallback_,shared_from_this()
+                ));
+            }
+        }
+        else//nwrote < 0
+        {
+            nwrote = 0;
+            if(errno != EWOULDBLOCK)
+            {
+                LOG_ERROR("TcpConnection::sendInLoop");
+                //SIGPIPE RESET
+                if(errno == EPIPE || errno == ECONNRESET)
+                {
+                    faultError = true;
+                }
+            }
+        }
+    }
+
+    //说明当前这一个write，并没有把数据全部发送出去，剩余的数据需要保存到缓冲区当中
+    //然后给channel注册epollout事件，poller发现tcp的发送缓冲区有空间
+    //会通知相应的sock-channel，调用writeCallvack_回调方法
+    //也就是调用TcpConnection::handleWrite，把发送缓冲区中的数据全部发送完成
+    if(!faultError && remaining > 0)
+    {
+        //目前发送缓冲区剩余的待发送数据长度
+        size_t oldLen = outputBuffer_.readableBytes();
+        //警告用户"发送缓冲区积压太多了"用户可以在回调中采取措施（比如停止发送、关闭连接等）
+        if(oldLen + remaining >= highWaterMark_
+            && oldLen < highWaterMark_
+            && highWaterMarkCallback_)
+        {
+            loop_->queueInLoop(
+                std::bind(highWaterMarkCallback_,shared_from_this(),oldLen + remaining)
+            );
+        }
+        //(char*)data + nwrote 是跳过已经发送的部分
+        outputBuffer_.append((char*)data + nwrote, remaining);
+        if(!channel_->isWriting())
+        {
+            //这里一定要注册channel的写事件，否则不会给channel通知epollout
+            channel_->enableWriting();
+        }
+    }
+}
+
+//关闭连接
+void TcpConnection::shutdown()
+{
+    if(state_ == kConnected)
+    {
+        setState(kDisconnecting);
+        loop_->runInLoop(
+            std::bind(&TcpConnection::shutdownInLoop,this)
+        );
+    }
+}
+
+void TcpConnection::shutdownInLoop()
+{
+    if(!channel_->isWriting())// 说明outputBuffer中的数据已经全部发送完成
+    {
+        socket_->shutdownWrite();// 关闭写端
+    }
+}
+
+//连接建立
+void TcpConnection::connectEstablished()
+{
+    setState(kConnected);
+    channel_->tie(shared_from_this());
+    channel_->enableReading();//向poller注册channel的epollin事件
+
+    //新连接建立，执行回调
+    connectionCallback_(shared_from_this());
+}
+
+//连接销毁
+void TcpConnection::connectDestroyed()
+{
+    if(state_ == kConnected)
+    {
+        setState(kDisconnected);
+        channel_->disableAll();//把channel的所有感兴趣事件从poller中del掉
+        connectionCallback_(shared_from_this());
+    }
+    channel_->remove();//把channel从poller中删除掉
 }
 
 void TcpConnection::handleRead(Timestamp receiveTime)
@@ -129,6 +271,7 @@ void TcpConnection::handleWrite()
     }
 }
 
+//poller => channel::closeCallbcak => TcpConnection::handleClose
 void TcpConnection::handleClose()
 {
     LOG_INFO("fd=%d state=%d \n",channel_->fd(),(int)state_);
@@ -137,7 +280,7 @@ void TcpConnection::handleClose()
 
     TcpConnectionPtr connPtr(shared_from_this());
     connectionCallback_(connPtr); //执行连接关闭的回调
-    closeCallback_(connPtr); // 关闭连接的回调
+    closeCallback_(connPtr); // 关闭连接的回调  执行的是TcpServer::removeConnection回调方法
 }
 
 void TcpConnection::handleError()

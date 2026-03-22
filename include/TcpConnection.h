@@ -40,7 +40,8 @@ public:
 
     bool connected() const { return state_ == kConnected; }
     //发送数据
-    void send(const char* message,int len);
+    //void send(const char* message,int len);
+    void send(const std::string& buf);
     //关闭连接
     void shutdown();
 
@@ -72,9 +73,9 @@ private:
         kConnected,
         kDisconnecting
     };
-    void handleRead(Timestamp receiveTime);
     void setState(StateE state) { state_ = state; }
     
+    void handleRead(Timestamp receiveTime);
     void handleWrite();
     void handleClose();
     void handleError();
@@ -107,6 +108,6 @@ private:
 
     size_t highWaterMark_;
 
-    Buffer inputBuffer_;
-    Buffer outputBuffer_;
+    Buffer inputBuffer_;//接收数据的缓冲区
+    Buffer outputBuffer_;//发送数据的缓冲区
 };

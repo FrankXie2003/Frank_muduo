@@ -44,15 +44,16 @@ void Socket::listen()
 int Socket::accept(InetAddress* peeraddr)//要修改所以用指针
 {
     sockaddr_in addr;
-    socklen_t len;
+    socklen_t len = sizeof(addr);
     bzero(&addr,sizeof(addr));
     /*
-    int accept(int sockfd, struct sockaddr* addr, socklen_t* addrlen);
+    int accept4(int sockfd, struct sockaddr* addr, socklen_t* addrlen, int flags);
     sockfd — 监听中的 socket fd
     addr — 输出参数，内核填入客户端的地址
     addrlen — 输入输出参数，传入 addr 缓冲区大小，返回实际填入大小
+    flags — SOCK_NONBLOCK（非阻塞）| SOCK_CLOEXEC（close-on-exec）
     */
-    int connfd = ::accept(sockfd_,(sockaddr*)&addr,&len);
+    int connfd = ::accept4(sockfd_,(sockaddr*)&addr,&len,SOCK_NONBLOCK | SOCK_CLOEXEC);
     if(connfd >= 0)
     {
         peeraddr->setSockAddr(addr);

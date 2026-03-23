@@ -5,6 +5,9 @@ project(Frank_muduo)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 生成 compile_commands.json 供 IDE 使用
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # 设置编译选项
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -Wall")
 

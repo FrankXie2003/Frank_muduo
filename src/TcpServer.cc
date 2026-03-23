@@ -31,6 +31,7 @@ TcpServer::TcpServer(EventLoop* loop,
             ,threadPool_(new EventLoopThreadPool(loop,name_))
             ,connectionCallback_()
             ,messageCallback_()
+            ,started_(0)
             ,nextConnId_(1)
 {
     //当有新用户连接时，会执行TcpServer::newConnection回调

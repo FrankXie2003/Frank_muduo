@@ -32,7 +32,7 @@ ssize_t Buffer::readFd(int fd, int* saveErrno)
     {
         *saveErrno = errno;
     }
-    else if(n <= writable)
+    else if(static_cast<size_t>(n) <= writable)
     {
         // 数据全部读进了 Buffer 自身
         writerIndex_ += n;

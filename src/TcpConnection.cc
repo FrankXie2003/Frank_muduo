@@ -74,12 +74,13 @@ void TcpConnection::send(const std::string& buf)
         }
         else
         {
-            loop_->runInLoop(std::bind(
-                &TcpConnection::sendInLoop,
-                this,
-                buf.c_str(),
-                buf.size()
-            ));
+            //buf.c_str()返回的是局部string的指针，bind拷贝的是指针值
+            //等到subLoop执行时buf已经析构，指针悬空
+            //这里拷贝一份string，保证数据生命周期延续到回调执行时
+            std::string msg(buf);
+            loop_->runInLoop([this, msg = std::move(msg)](){
+                sendInLoop(msg.c_str(), msg.size());
+            });
         }
     }
 }

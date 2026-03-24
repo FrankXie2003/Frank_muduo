@@ -20,8 +20,7 @@ void EventLoopThreadPool::start(const ThreadInitCallback& cb)
 
     for(int i = 0; i < numThreads_; ++i)
     {
-        char buf[name_.size() + 32];
-        snprintf(buf,sizeof(buf),"%s%d",name_.c_str(),i);
+        std::string buf = name_ + std::to_string(i);
         EventLoopThread* t = new EventLoopThread(cb,buf);
         threads_.push_back(std::unique_ptr<EventLoopThread>(t));
         //底层创建线程，绑定一个新的EventLoop，并返回该loop的地址

@@ -28,13 +28,13 @@ void Thread::start()//一个Thread对象，记录的就是一个新线程的详�
     //确保新线程完成初始化后，start() 才返回。这样调用方拿到的 tid_ 一定是有效的
     sem_t sem;
     sem_init(&sem,false,0);
-    thread_ = std::shared_ptr<std::thread>(new std::thread([&] { 
+    thread_ = std::make_unique<std::thread>([&] {
         //获取线程的tid值
         tid_ = CurrentThread::tid();
         sem_post(&sem);
         //开启一个新线程，专门执行该线程函数
         func_();
-     } ));
+     } );
 
      sem_wait(&sem);
 }

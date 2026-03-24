@@ -30,7 +30,7 @@ private:
     void setDefaultName();
     bool started_;
     bool joined_;
-    std::shared_ptr<std::thread> thread_;
+    std::unique_ptr<std::thread> thread_;
     pid_t tid_;
     ThreadFunc func_;
     std::string name_;

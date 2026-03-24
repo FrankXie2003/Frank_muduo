@@ -25,7 +25,7 @@ Acceptor::Acceptor(EventLoop* loop,const InetAddress& listenAddr,bool reuseport)
         ,listenning_(false)
 {
     acceptSocket_.setReuseAddr(true);
-    acceptSocket_.setReusePort(true);
+    acceptSocket_.setReusePort(reuseport);
     acceptSocket_.bindAddress(listenAddr);// bind
     //用新用户的连接，要执行一个回调(connfd => channel => subloop)
     //baseloop => acceptChannel_(listenfd)

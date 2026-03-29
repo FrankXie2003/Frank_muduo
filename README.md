@@ -1,654 +1,659 @@
-# Frank_muduo - 基于 Reactor 模式的高性能网络库
+# Frank_muduo
 
-## 项目简介
+一个基于 C++11 实现的轻量级 Linux TCP 网络库，整体设计参考 muduo，核心模型为：
 
-Frank_muduo 是一个基于 C++11 实现的高性能网络库，采用 Reactor 模式和多线程模型，支持高并发 TCP 连接。本项目参考了陈硕的 muduo 网络库设计思想，使用 epoll 作为 I/O 多路复用机制，实现了 one loop per thread 的线程模型。
+`Reactor + one loop per thread + 主从 Reactor + 线程池`
 
-### 核心特性
+它不是对 muduo 的完整复刻，而是一个更聚焦于 TCP 服务端主链路的学习型实现。项目已经打通了从监听端口、接收连接、事件分发、消息收发到连接销毁的完整路径，适合用来学习 Reactor 网络编程，也适合作为个人网络框架继续扩展。
 
-- **Reactor 模式**：基于事件驱动的网络编程模型
-- **多线程模型**：主从 Reactor 模式，one loop per thread
-- **非阻塞 I/O**：使用 epoll ET 模式
-- **智能指针管理**：使用 shared_ptr/weak_ptr 管理对象生命周期
-- **高性能缓冲区**：自动扩容的应用层缓冲区
-- **线程安全**：使用 mutex 和 atomic 保证线程安全
+---
 
-### 技术栈
+## 项目亮点
 
-- C++11
-- Linux epoll
-- POSIX 线程库
-- CMake 构建系统
+- 基于 `epoll` 的 I/O 多路复用模型
+- 主从 Reactor 结构：`mainLoop` 负责接入，`subLoop` 负责 I/O
+- `one loop per thread`，每个 I/O 线程独占一个 `EventLoop`
+- 基于 `eventfd` 的跨线程唤醒机制
+- `Channel` 封装 fd 与事件回调的绑定关系
+- `TcpServer` / `TcpConnection` 封装服务端和连接生命周期
+- `Buffer` 提供应用层输入输出缓冲区
+- 使用 `shared_ptr + weak_ptr + tie()` 处理回调期间的生命周期安全
+
+---
+
+## 项目状态
+
+当前仓库已经具备一个可运行的 TCP 服务端核心框架，适合：
+
+- 学习 Reactor 网络库的整体结构
+- 阅读从 `TcpServer` 到 `TcpConnection` 的主调用链
+- 理解 `epoll`、非阻塞 socket、线程池、跨线程唤醒如何配合
+- 在现有基础上继续补充定时器、客户端、日志、连接管理等能力
+
+当前实现已经覆盖：
+
+- `EventLoop`
+- `Poller / EPollPoller`
+- `Channel`
+- `Acceptor`
+- `TcpServer`
+- `TcpConnection`
+- `EventLoopThread / EventLoopThreadPool`
+- `Buffer`
+- `Socket / InetAddress`
+- `Logger / Timestamp / CurrentThread`
+
+当前仍属于“学习型框架”而不是“完整工业级网络库”，这点需要明确。
+
+---
+
+## 快速理解
+
+一句话理解这个项目：
+
+主线程负责接收新连接，工作线程负责处理连接上的 I/O，`EventLoop` 负责驱动事件循环，`Poller` 负责与 `epoll` 交互，`Channel` 负责事件分发，`TcpConnection` 负责单个连接的收发和生命周期。
+
+### 整体分层图
+
+```text
++------------------------------------------------------------------+
+|                          用户业务层                               |
+|                EchoServer / 自定义业务回调逻辑                     |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                         TCP 抽象层                                |
+|                TcpServer / TcpConnection / Buffer                |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                     事件驱动与线程调度层                          |
+|        EventLoop / Acceptor / EventLoopThreadPool                |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                     事件封装与 I/O 复用层                         |
+|                 Channel / Poller / EPollPoller                   |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                      Linux 系统调用层                             |
+|      socket / bind / listen / accept4 / epoll / eventfd / readv |
++------------------------------------------------------------------+
+```
+
+### 模块关系图
+
+```mermaid
+flowchart TD
+    A[用户代码] --> B[TcpServer]
+    B --> C[Acceptor]
+    B --> D[EventLoopThreadPool]
+    B --> E[TcpConnection]
+    C --> F[EventLoop mainLoop]
+    D --> G[EventLoop subLoop]
+    E --> G
+    F --> H[Poller]
+    G --> H
+    H --> I[EPollPoller]
+    F --> J[Channel]
+    G --> J
+    J --> K[fd / epoll / eventfd / socket]
+    E --> L[Buffer]
+```
+
+如果当前平台不支持 Mermaid，可以直接阅读上面的纯文本分层图。
 
 ---
 
 ## 目录
 
-1. [整体架构](#整体架构)
-2. [核心类详解](#核心类详解)
-3. [关键流程](#关键流程)
-4. [编译与使用](#编译与使用)
-5. [示例程序](#示例程序)
+- [项目亮点](#项目亮点)
+- [项目状态](#项目状态)
+- [快速开始](#快速开始)
+- [示例程序](#示例程序)
+- [整体架构](#整体架构)
+- [线程模型](#线程模型)
+- [关键调用链](#关键调用链)
+- [核心模块](#核心模块)
+- [目录结构](#目录结构)
+- [适合谁阅读](#适合谁阅读)
+- [当前限制](#当前限制)
+- [后续可扩展方向](#后续可扩展方向)
+
+---
+
+## 快速开始
+
+### 环境要求
+
+- Linux 或 WSL2
+- `g++`
+- `cmake >= 3.10`
+- `make`
+- `pthread`
+
+建议使用 Ubuntu 20.04 及以上版本。
+
+### 方式一：使用 CMake 构建共享库
+
+根目录 `CMakeLists.txt` 当前会生成共享库：
+
+```text
+lib/libFrank_muduo.so
+```
+
+构建命令：
+
+```bash
+mkdir -p build
+cd build
+cmake ..
+make
+```
+
+### 方式二：使用 `autobuild.sh`
+
+仓库根目录提供了 `autobuild.sh`。脚本会：
+
+1. 清空并重建 `build/`
+2. 执行 `cmake ..` 和 `make`
+3. 把头文件复制到 `/usr/include/mymuduo/`
+4. 把动态库复制到 `/usr/lib/`
+5. 执行 `ldconfig`
+
+执行方式：
+
+```bash
+bash autobuild.sh
+```
+
+注意：
+
+- 这个脚本包含 `sudo`
+- 它会向系统目录安装头文件和动态库
+- 如果你只是本地阅读和调试源码，可以只使用 CMake 构建，不一定需要安装到系统目录
+
+---
+
+## 示例程序
+
+仓库中提供了一个简单的 echo server 示例：
+
+- `example/testserver.cc`
+
+这个示例的使用方式非常接近真实业务代码：
+
+```cpp
+EventLoop loop;
+InetAddress addr(8000);
+TcpServer server(&loop, addr, "EchoServer");
+
+server.setConnectionCallback(...);
+server.setMessageCallback(...);
+server.setThreadNum(3);
+
+server.start();
+loop.loop();
+```
+
+示例完成了这些事情：
+
+- 创建主事件循环
+- 创建服务端对象
+- 注册连接回调
+- 注册消息回调
+- 设置 I/O 线程数量
+- 启动服务器并进入事件循环
+
+消息处理逻辑是一个最简单的 echo 流程：
+
+- 从 `Buffer` 取出收到的数据
+- 调用 `conn->send(msg)` 把数据原样回写
+
+### 关于示例编译的说明
+
+当前 `example/testserver.cc` 使用的是：
+
+```cpp
+#include <mymuduo/EventLoop.h>
+```
+
+这说明它默认面向“安装到系统头文件目录后的使用方式”。
+
+因此：
+
+- 如果你已经执行过 `autobuild.sh`，这种包含方式是合理的
+- 如果你只是本地直接编译仓库源码，可能需要调整包含路径或编译参数
 
 ---
 
 ## 整体架构
 
+从职责上看，项目可以分为四层：
+
+1. 用户业务层
+2. TCP 抽象层
+3. 事件驱动与线程调度层
+4. I/O 复用与系统调用层
+
 ### 架构图
 
-┌─────────────────────────────────────────────────────────────────┐
-│                          用户代码层                              │
-│                      (EchoServer, etc.)                         │
-└────────────────────────┬────────────────────────────────────────┘
-│
-↓
-┌─────────────────────────────────────────────────────────────────┐
-│                        TcpServer                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐   │
-│  │  Acceptor    │  │EventLoopThread│  │ TcpConnection      │   │
-│  │  (mainLoop)  │  │     Pool      │  │ (subLoop管理)      │   │
-│  └──────────────┘  └──────────────┘  └────────────────────┘   │
-└────────────────────────┬────────────────────────────────────────┘
-│
-↓
-┌─────────────────────────────────────────────────────────────────┐
-│                      EventLoop 层                               │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  mainLoop (主线程)                                        │  │
-│  │  - 负责监听新连接 (Acceptor)                              │  │
-│  │  - 分发连接到 subLoop                                     │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  subLoop (工作线程池)                                     │  │
-│  │  - 负责已建立连接的 I/O 事件处理                          │  │
-│  │  - 每个线程一个 EventLoop                                 │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└────────────────────────┬────────────────────────────────────────┘
-│
-↓
-┌─────────────────────────────────────────────────────────────────┐
-│                    Channel & Poller 层                          │
-│  ┌──────────────┐         ┌──────────────┐                     │
-│  │   Channel    │ ◄─────► │   Poller     │                     │
-│  │  (fd封装)    │         │  (epoll封装)  │                     │
-│  └──────────────┘         └──────────────┘                     │
-└────────────────────────┬────────────────────────────────────────┘
-│
-↓
-┌─────────────────────────────────────────────────────────────────┐
-│                      操作系统层                                  │
-│                   (epoll, socket, etc.)                         │
-└─────────────────────────────────────────────────────────────────┘
+```text
+用户业务代码
+  |
+  v
+TcpServer / TcpConnection
+  |
+  v
+EventLoop / EventLoopThreadPool / Acceptor
+  |
+  v
+Channel / Poller / EPollPoller
+  |
+  v
+socket / eventfd / epoll / readv / write
+```
 
+### 核心设计思想
 
+这个项目的设计核心可以概括为 5 点：
 
-### 线程模型
+1. `Reactor`
+2. `one loop per thread`
+3. 主从 Reactor
+4. 事件驱动与回调分发
+5. 跨线程任务投递与唤醒
 
-主线程 (mainLoop)                工作线程池 (subLoop)
-│                                  │
-│  监听 listenfd                   │
-│  ↓                               │
-│  accept() 新连接                 │
-│  ↓                               │
-│  轮询选择一个 subLoop            │
-│  ↓                               │
-├──────────────────────────────────┤
-│                                  │
-│                            ┌─────┴─────┐
-│                            │           │
-│                         subLoop1   subLoop2 ... subLoopN
-│                            │           │
-│                         处理连接1   处理连接2
-│                         的I/O事件   的I/O事件
+具体来说：
 
-
-
-### EventLoop 与 Channel、Poller 的关系
-
-┌─────────────────────────────────────────┐
-│           Thread (线程)                  │
-│  ┌───────────────────────────────────┐  │
-│  │      EventLoop (事件循环)         │  │
-│  │  ┌─────────────────────────────┐  │  │
-│  │  │   Poller (封装 epoll)       │  │  │
-│  │  │   - epollfd_ (一个！)       │  │  │
-│  │  │   - channels_ (map)         │  │  │
-│  │  └─────────────────────────────┘  │  │
-│  │                                    │  │
-│  │  ┌─────────────────────────────┐  │  │
-│  │  │   ChannelList (活跃的)      │  │  │
-│  │  │   - Channel1 (fd1)          │  │  │
-│  │  │   - Channel2 (fd2)          │  │  │
-│  │  │   - Channel3 (fd3)          │  │  │
-│  │  │   - ...                     │  │  │
-│  │  └─────────────────────────────┘  │  │
-│  └───────────────────────────────────┘  │
-└─────────────────────────────────────────┘
-
-
+- `Poller` 负责监听哪些 fd 活跃
+- `Channel` 负责把活跃事件分发给对应回调
+- `EventLoop` 负责驱动事件循环与任务调度
+- `TcpServer` 负责对外提供服务端入口
+- `TcpConnection` 负责单个连接的收发与生命周期管理
 
 ---
 
-## 核心类详解
+## 线程模型
 
-### 1. TcpServer - 服务器类
+项目采用主从 Reactor 线程结构：
 
-**作用**：对外的服务器编程接口，管理连接的建立和分发。
+- 主线程中的 `mainLoop` 负责监听和接收新连接
+- `EventLoopThreadPool` 负责管理多个工作线程
+- 每个工作线程运行一个 `subLoop`
+- 新连接建立后，会被分配到某个 `subLoop`
+- 该连接后续的读写事件通常都在所属 `subLoop` 中处理
 
-**核心成员**：
-- `Acceptor* acceptor_`：监听新连接
-- `EventLoopThreadPool* threadPool_`：工作线程池
-- `ConnectionMap connections_`：管理所有已建立的连接
+### 线程职责图
 
-**关键方法**：
-- `start()`：启动服务器，开始监听
-- `newConnection()`：新连接到来时的回调
-- `removeConnection()`：移除连接
+```text
+主线程
+  |
+  +-- EventLoop(mainLoop)
+        |
+        +-- Acceptor
+              |
+              +-- 监听 listenfd
+              +-- accept 新连接
+              +-- 选择一个 subLoop
 
-**调用链**：
-用户调用 server.start()
-→ Acceptor::listen()
-→ EventLoop::loop()
-→ 有新连接时 Acceptor::handleRead()
-→ TcpServer::newConnection()
-→ 创建 TcpConnection
-→ 选择一个 subLoop
-→ TcpConnection::connectEstablished()
+工作线程 1
+  |
+  +-- EventLoop(subLoop1)
+        |
+        +-- 管理一批 TcpConnection
+        +-- 处理读事件 / 写事件 / 关闭事件
 
+工作线程 2
+  |
+  +-- EventLoop(subLoop2)
+        |
+        +-- 管理另一批 TcpConnection
+        +-- 处理读事件 / 写事件 / 关闭事件
+```
 
+### 新连接分发图
 
-### 2. EventLoop - 事件循环类
+```mermaid
+flowchart LR
+    A[客户端连接到来] --> B[mainLoop 监听到 listenfd 可读]
+    B --> C[Acceptor::handleRead]
+    C --> D[accept4 获取 connfd]
+    D --> E[EventLoopThreadPool::getNextLoop]
+    E --> F[选择一个 subLoop]
+    F --> G[创建 TcpConnection]
+    G --> H[在目标 subLoop 中建立连接]
+```
 
-**作用**：事件循环的核心，one loop per thread，每个线程一个 EventLoop。
+---
 
-**核心成员**：
-- `Poller* poller_`：I/O 多路复用器（epoll 封装）
-- `ChannelList activeChannels_`：活跃的 Channel 列表
-- `int wakeupFd_`：用于唤醒 EventLoop 的 eventfd
-- `std::vector<Functor> pendingFunctors_`：待执行的回调队列
+## 关键调用链
 
-**关键方法**：
-- `loop()`：开启事件循环
-- `runInLoop()`：在当前 loop 中执行回调
-- `queueInLoop()`：把回调放入队列，唤醒 loop 执行
-- `wakeup()`：唤醒 loop 所在的线程
+这一部分是理解整个项目最重要的主线。
 
-**设计要点**：
-- 使用 `threadId_` 判断是否在自己的线程中
-- 使用 `wakeupFd_` 和 `eventfd` 实现线程间唤醒
-- 使用 `pendingFunctors_` 队列实现跨线程调用
+### 1. 服务启动
 
-### 3. Channel - 通道类
-
-**作用**：封装 fd 和其感兴趣的事件，以及事件发生时的回调函数。
-
-**核心成员**：
-- `int fd_`：文件描述符
-- `int events_`：关注的事件（EPOLLIN、EPOLLOUT 等）
-- `int revents_`：实际发生的事件
-- `ReadEventCallback readCallback_`：读事件回调
-- `EventCallback writeCallback_`：写事件回调
-- `std::weak_ptr<void> tie_`：用于延长对象生命周期
-
-**关键方法**：
-- `handleEvent()`：根据 revents_ 调用相应的回调
-- `tie()`：绑定 TcpConnection，防止在回调中被销毁
-- `enableReading()`/`enableWriting()`：注册读/写事件
-
-**tie 机制**：
-```cpp
-channel_->tie(shared_from_this());  // TcpConnection 构造时
-
-// 在 handleEvent 中
-std::shared_ptr<void> guard = tie_.lock();  // 提升为 shared_ptr
-if(guard) {
-    handleEventWithGuard();  // 保证对象在回调期间不被销毁
-}
-4. Poller - I/O 多路复用抽象类
-作用：封装 epoll，提供统一的 I/O 多路复用接口。
-
-核心成员：
-
-int epollfd_：epoll 文件描述符
-std::map<int, Channel*> channels_：fd 到 Channel 的映射
-关键方法：
-
-poll()：调用 epoll_wait，返回活跃的 Channel
-updateChannel()：更新 Channel 的事件（epoll_ctl）
-removeChannel()：移除 Channel
-EPollPoller 实现：
-
-
-Timestamp EPollPoller::poll(int timeoutMs, ChannelList* activeChannels)
-{
-    int numEvents = ::epoll_wait(epollfd_, &*events_.begin(),
-                                  static_cast<int>(events_.size()), timeoutMs);
-    // 填充 activeChannels
-    fillActiveChannels(numEvents, activeChannels);
-    return Timestamp::now();
-}
-5. TcpConnection - TCP 连接类
-作用：管理一个 TCP 连接，封装 socket fd 和读写缓冲区。
-
-核心成员：
-
-Socket* socket_：封装的 socket
-Channel* channel_：对应的 Channel
-Buffer inputBuffer_：接收缓冲区
-Buffer outputBuffer_：发送缓冲区
-ConnectionCallback connectionCallback_：连接建立/断开回调
-MessageCallback messageCallback_：消息到达回调
-关键方法：
-
-connectEstablished()：连接建立时调用
-connectDestroyed()：连接销毁时调用
-send()：发送数据
-shutdown()：关闭写端
-handleRead()：处理读事件
-handleWrite()：处理写事件
-生命周期管理：
-
-使用 shared_ptr<TcpConnection> 管理
-使用 enable_shared_from_this 获取自身的 shared_ptr
-Channel 使用 tie() 机制防止在回调中被销毁
-6. Acceptor - 接受器类
-作用：监听新连接，accept 后回调 TcpServer。
-
-核心成员：
-
-Socket acceptSocket_：监听 socket
-Channel acceptChannel_：监听 Channel
-NewConnectionCallback newConnectionCallback_：新连接回调
-关键方法：
-
-listen()：开始监听
-handleRead()：有新连接时调用 accept
-7. EventLoopThreadPool - 事件循环线程池
-作用：管理工作线程池，实现 one loop per thread。
-
-核心成员：
-
-std::vector<EventLoopThread*> threads_：线程列表
-std::vector<EventLoop*> loops_：EventLoop 列表
-int next_：轮询索引
-关键方法：
-
-start()：启动线程池
-getNextLoop()：轮询获取下一个 EventLoop
-8. Buffer - 缓冲区类
-作用：应用层缓冲区，自动扩容。
-
-核心成员：
-
-std::vector<char> buffer_：缓冲区
-size_t readerIndex_：读指针
-size_t writerIndex_：写指针
-关键方法：
-
-readableBytes()：可读字节数
-writableBytes()：可写字节数
-retrieve()：取出数据
-append()：追加数据
-readFd()：从 fd 读取数据到缓冲区
-设计要点：
-
-使用 readv + 栈上临时缓冲区实现高效读取
-自动扩容，避免频繁分配
-关键流程
-1. 服务器启动流程
-
-用户代码：
-  EventLoop loop;
-  TcpServer server(&loop, addr, "EchoServer");
-  server.start();
-  loop.loop();
+```text
+用户代码
+  -> 创建 EventLoop
+  -> 创建 TcpServer
+  -> 注册回调
+  -> TcpServer::start()
+  -> EventLoop::loop()
+```
 
 内部流程：
-  1. TcpServer 构造
-     → 创建 Acceptor
-     → 创建 EventLoopThreadPool
-     → 设置 newConnectionCallback
 
-  2. server.start()
-     → threadPool_->start()  // 启动工作线程
-     → acceptor_->listen()   // 开始监听
+```text
+TcpServer::start()
+  -> EventLoopThreadPool::start()
+  -> 启动多个 EventLoopThread
+  -> mainLoop 中执行 Acceptor::listen()
+  -> listenfd 注册到 Poller
+  -> EventLoop 进入 loop()
+```
 
-  3. loop.loop()
-     → while(!quit_) {
-         poller_->poll()      // epoll_wait
-         处理活跃的 Channel
-         执行 pendingFunctors
-       }
-2. 新连接建立流程
+### 2. 新连接建立
 
-1. 客户端连接到来
-   → listenfd 可读
-   → Poller 返回 acceptChannel
+```text
+listenfd 可读
+  -> Acceptor::handleRead()
+  -> accept4() 获取 connfd
+  -> TcpServer::newConnection()
+  -> EventLoopThreadPool::getNextLoop()
+  -> 创建 TcpConnection
+  -> 在目标 subLoop 中执行 connectEstablished()
+```
 
-2. acceptChannel->handleEvent()
-   → Acceptor::handleRead()
-   → accept() 获取 connfd
+### 3. 消息到达
 
-3. Acceptor::newConnectionCallback_()
-   → TcpServer::newConnection()
-   → 创建 TcpConnection 对象
-   → 选择一个 subLoop（轮询）
-   → 设置回调函数
+```text
+connfd 可读
+  -> epoll_wait 返回
+  -> EventLoop 获得活跃 Channel
+  -> Channel::handleEvent()
+  -> TcpConnection::handleRead()
+  -> Buffer::readFd()
+  -> 调用 messageCallback
+```
 
-4. 在 subLoop 中执行
-   → TcpConnection::connectEstablished()
-   → channel_->tie(shared_from_this())
-   → channel_->enableReading()
-   → connectionCallback_()  // 用户的连接建立回调
-3. 消息读取流程
+### 4. 消息发送
 
-1. connfd 可读
-   → Poller 返回对应的 Channel
+```text
+用户调用 send()
+  -> 如果在所属 loop 线程，直接 sendInLoop()
+  -> 否则 queueInLoop()
+  -> 先尝试直接写 socket
+  -> 未写完的数据进入 outputBuffer_
+  -> 注册写事件
+  -> 可写时进入 handleWrite()
+  -> 数据写完后取消写事件
+```
 
-2. channel->handleEvent()
-   → TcpConnection::handleRead()
-   → inputBuffer_.readFd()  // 读取数据到缓冲区
+### 总时序图
 
-3. messageCallback_()
-   → 用户的消息回调
-   → 处理 inputBuffer_ 中的数据
-4. 消息发送流程
+```mermaid
+sequenceDiagram
+    participant Client as Client
+    participant Main as mainLoop
+    participant Acc as Acceptor
+    participant Pool as EventLoopThreadPool
+    participant Sub as subLoop
+    participant Conn as TcpConnection
 
-1. 用户调用 conn->send(data)
-
-2. TcpConnection::send()
-   → 判断是否在 loop 线程
-   → 如果在，直接调用 sendInLoop()
-   → 如果不在，queueInLoop(sendInLoop)
-
-3. TcpConnection::sendInLoop()
-   → 尝试直接 write()
-   → 如果没写完，放入 outputBuffer_
-   → channel_->enableWriting()  // 注册写事件
-
-4. connfd 可写
-   → TcpConnection::handleWrite()
-   → 从 outputBuffer_ 读取数据
-   → write() 发送
-   → 如果全部发送完，channel_->disableWriting()
-5. 连接关闭流程
-
-1. 用户调用 conn->shutdown()
-   → TcpConnection::shutdown()
-   → shutdownInLoop()
-   → socket_->shutdownWrite()  // 关闭写端
-
-2. 对端关闭连接
-   → connfd 可读，但 read() 返回 0
-   → TcpConnection::handleRead()
-   → handleClose()
-
-3. TcpConnection::handleClose()
-   → channel_->disableAll()
-   → closeCallback_()
-   → TcpServer::removeConnection()
-
-4. TcpServer::removeConnection()
-   → connections_.erase(conn)
-   → queueInLoop(connectDestroyed)
-
-5. TcpConnection::connectDestroyed()
-   → channel_->remove()
-   → connectionCallback_()  // 用户的连接断开回调
-6. 跨线程调用流程
-
-场景：在线程 A 中调用线程 B 的 EventLoop 执行任务
-
-1. 线程 A 调用
-   → loopB->runInLoop(functor)
-
-2. EventLoop::runInLoop()
-   → 判断 isInLoopThread()
-   → 如果不在，调用 queueInLoop()
-
-3. EventLoop::queueInLoop()
-   → pendingFunctors_.push_back(functor)
-   → wakeup()  // 唤醒线程 B
-
-4. EventLoop::wakeup()
-   → write(wakeupFd_, &one, sizeof(one))
-   → 触发 wakeupChannel_ 的读事件
-
-5. 线程 B 的 EventLoop::loop()
-   → poller_->poll() 返回（wakeupFd_ 可读）
-   → handleRead()  // 读取 wakeupFd_
-   → doPendingFunctors()  // 执行队列中的任务
-编译与使用
-编译库
-
-# 1. 克隆项目
-git clone <your-repo-url>
-cd Frank_muduo
-
-# 2. 使用自动编译脚本
-./autobuild.sh
-
-# 或者手动编译
-mkdir build && cd build
-cmake ..
-make
-
-# 3. 安装到系统目录（需要 sudo）
-sudo cp lib/libFrank_muduo.so /usr/lib/
-sudo cp -r include/* /usr/include/mymuduo/
-sudo ldconfig
-使用库
-1. 包含头文件
-
-
-#include <mymuduo/TcpServer.h>
-#include <mymuduo/EventLoop.h>
-#include <mymuduo/InetAddress.h>
-2. 编译链接
-
-
-g++ -o myserver myserver.cpp -lFrank_muduo -lpthread
-示例程序
-Echo 服务器（长连接）
-
-#include <mymuduo/TcpServer.h>
-#include <mymuduo/EventLoop.h>
-#include <mymuduo/InetAddress.h>
-#include <mymuduo/Logger.h>
-
-class EchoServer
-{
-public:
-    EchoServer(EventLoop* loop, const InetAddress& addr, const std::string& name)
-        : server_(loop, addr, name)
-        , loop_(loop)
-    {
-        // 注册回调函数
-        server_.setConnectionCallback(
-            std::bind(&EchoServer::onConnection, this, std::placeholders::_1));
-        
-        server_.setMessageCallback(
-            std::bind(&EchoServer::onMessage, this,
-                     std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-        
-        // 设置线程数量
-        server_.setThreadNum(3);
-    }
-    
-    void start()
-    {
-        server_.start();
-    }
-
-private:
-    // 连接建立或断开的回调
-    void onConnection(const TcpConnectionPtr& conn)
-    {
-        if(conn->connected())
-        {
-            LOG_INFO("Connection UP : %s", conn->peerAddress().toIpPort().c_str());
-        }
-        else
-        {
-            LOG_INFO("Connection DOWN : %s", conn->peerAddress().toIpPort().c_str());
-        }
-    }
-    
-    // 消息到达的回调
-    void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp time)
-    {
-        std::string msg = buf->retrieveAllAsString();
-        LOG_INFO("Received %lu bytes from %s", 
-                 msg.size(), conn->peerAddress().toIpPort().c_str());
-        
-        // 回显消息
-        conn->send(msg);
-    }
-    
-    EventLoop* loop_;
-    TcpServer server_;
-};
-
-int main()
-{
-    EventLoop loop;
-    InetAddress addr(8000);
-    
-    EchoServer server(&loop, addr, "EchoServer");
-    server.start();
-    
-    LOG_INFO("EchoServer started on port 8000");
-    loop.loop();  // 启动事件循环
-    
-    return 0;
-}
-测试
-
-# 编译
-cd example
-make
-
-# 运行服务器
-./testserver
-
-# 在另一个终端测试
-telnet localhost 8000
-# 或
-nc localhost 8000
-项目结构
-
-Frank_muduo/
-├── include/              # 头文件
-│   ├── TcpServer.h
-│   ├── EventLoop.h
-│   ├── Channel.h
-│   ├── Poller.h
-│   ├── EPollPoller.h
-│   ├── TcpConnection.h
-│   ├── Acceptor.h
-│   ├── Socket.h
-│   ├── InetAddress.h
-│   ├── Buffer.h
-│   ├── EventLoopThread.h
-│   ├── EventLoopThreadPool.h
-│   ├── Thread.h
-│   ├── CurrentThread.h
-│   ├── Timestamp.h
-│   ├── Logger.h
-│   ├── Callbacks.h
-│   └── nocopyable.h
-├── src/                  # 源文件
-│   ├── TcpServer.cc
-│   ├── EventLoop.cc
-│   ├── Channel.cc
-│   ├── Poller.cc
-│   ├── EPollPoller.cc
-│   ├── DefaultPoller.cc
-│   ├── TcpConnection.cc
-│   ├── Acceptor.cc
-│   ├── Socket.cc
-│   ├── InetAddress.cc
-│   ├── Buffer.cc
-│   ├── EventLoopThread.cc
-│   ├── EventLoopThreadPool.cc
-│   ├── Thread.cc
-│   ├── CurrentThread.cc
-│   ├── Timestamp.cc
-│   └── Logger.cc
-├── example/              # 示例程序
-│   ├── testserver.cc
-│   └── Makefile
-├── lib/                  # 编译生成的库文件
-│   └── libFrank_muduo.so
-├── build/                # CMake 构建目录
-├── CMakeLists.txt        # CMake 配置文件
-├── autobuild.sh          # 自动编译脚本
-└── README.md             # 本文档
-设计亮点
-1. Reactor 模式
-采用主从 Reactor 模式：
-
-主 Reactor：mainLoop，负责监听新连接
-从 Reactor：subLoop 线程池，负责已建立连接的 I/O 事件
-2. One Loop Per Thread
-每个线程一个 EventLoop，避免锁竞争：
-
-每个 EventLoop 独立运行在一个线程中
-使用 threadId_ 判断是否在自己的线程中
-跨线程调用使用 queueInLoop() + wakeup()
-3. 智能指针管理生命周期
-使用 shared_ptr 和 weak_ptr 管理对象生命周期：
-
-TcpConnection 使用 shared_ptr 管理
-Channel 使用 weak_ptr + tie() 机制防止在回调中被销毁
-4. 高效的缓冲区设计
-Buffer 类使用 readv + 栈上临时缓冲区：
-
-减少系统调用次数
-自动扩容，避免频繁分配
-使用 readerIndex_ 和 writerIndex_ 管理读写位置
-5. 线程间通信
-使用 eventfd 实现线程间唤醒：
-
-每个 EventLoop 有一个 wakeupFd_
-跨线程调用时，write wakeupFd_ 唤醒目标线程
-目标线程的 epoll_wait 返回，执行 pendingFunctors_
-性能优化
-ET 模式：使用 epoll ET 模式，减少事件触发次数
-非阻塞 I/O：所有 socket 都设置为非阻塞
-应用层缓冲区：减少系统调用，提高吞吐量
-线程池：避免频繁创建销毁线程
-对象池：复用 TcpConnection 对象（可扩展）
-注意事项
-线程安全：
-
-EventLoop 的方法只能在自己的线程中调用
-跨线程调用必须使用 runInLoop() 或 queueInLoop()
-对象生命周期：
-
-TcpConnection 使用 shared_ptr 管理
-不要在回调中直接删除对象
-回调函数：
-
-回调函数不要阻塞，否则会影响整个 EventLoop
-耗时操作应该放到线程池中执行
-资源限制：
-
-注意文件描述符限制（ulimit -n）
-注意线程数量，避免过多线程导致上下文切换开销
-许可证
-MIT License
-
-参考资料
-陈硕《Linux 多线程服务端编程：使用 muduo C++ 网络库》
-muduo 网络库：https://github.com/chenshuo/muduo
-Linux epoll 文档：man 7 epoll
-作者
-Frank
-
-致谢
-感谢陈硕老师的 muduo 网络库，本项目参考了其设计思想和实现细节。
-
-
+    Client->>Main: 发起连接
+    Main->>Acc: listenfd 可读
+    Acc->>Acc: accept4()
+    Acc->>Pool: 请求分配 subLoop
+    Pool-->>Acc: 返回目标 subLoop
+    Acc->>Conn: 创建连接对象
+    Conn->>Sub: connectEstablished()
+    Client->>Sub: 发送数据
+    Sub->>Conn: handleRead()
+    Conn-->>Client: send()/回写数据
+```
 
 ---
+
+## 核心模块
+
+### EventLoop
+
+相关文件：
+
+- `include/EventLoop.h`
+- `src/EventLoop.cc`
+
+职责：
+
+- 驱动事件循环
+- 调用 `Poller` 等待 I/O 事件
+- 执行活跃 `Channel` 的回调
+- 执行跨线程投递任务
+- 通过 `eventfd` 唤醒阻塞中的 loop
+
+### Poller / EPollPoller
+
+相关文件：
+
+- `include/Poller.h`
+- `include/EPollPoller.h`
+- `src/Poller.cc`
+- `src/EPollPoller.cc`
+
+职责：
+
+- 抽象 I/O 复用器接口
+- 管理 `fd -> Channel*` 映射
+- 调用 `epoll_wait`
+- 回填活跃事件
+- 处理 `epoll_ctl(add/mod/del)`
+
+说明：
+
+- 当前主实现是 `epoll`
+- 当前代码没有启用 `EPOLLET`
+
+### Channel
+
+相关文件：
+
+- `include/Channel.h`
+- `src/Channel.cc`
+
+职责：
+
+- 绑定 fd 和其关注事件
+- 保存读、写、关闭、错误回调
+- 在事件发生时把回调分发给上层对象
+
+补充说明：
+
+- `Channel` 是事件分发器，不是业务对象
+- `tie()` 用于保护回调执行期间的对象生命周期
+
+### Acceptor
+
+相关文件：
+
+- `include/Acceptor.h`
+- `src/Acceptor.cc`
+
+职责：
+
+- 创建监听 socket
+- 执行 `bind + listen`
+- 在 `listenfd` 可读时执行 `accept4`
+- 把新连接交给 `TcpServer`
+
+### TcpServer
+
+相关文件：
+
+- `include/TcpServer.h`
+- `src/TcpServer.cc`
+
+职责：
+
+- 对外提供服务端使用入口
+- 管理 `Acceptor`
+- 管理 `EventLoopThreadPool`
+- 保存活动连接
+- 给连接绑定各类用户回调
+
+### TcpConnection
+
+相关文件：
+
+- `include/TcpConnection.h`
+- `src/TcpConnection.cc`
+
+职责：
+
+- 抽象单个 TCP 连接
+- 管理输入输出缓冲区
+- 处理读写事件
+- 处理连接关闭和销毁
+- 提供 `send()`、`shutdown()` 等接口
+
+### Buffer
+
+相关文件：
+
+- `include/Buffer.h`
+- `src/Buffer.cc`
+
+职责：
+
+- 管理应用层输入输出数据
+- 配合 `readv` 执行高效读取
+- 处理一次读不完、写不完的情况
+
+---
+
+## 目录结构
+
+```text
+.
+├── CMakeLists.txt
+├── autobuild.sh
+├── README.md
+├── include/
+│   ├── Acceptor.h
+│   ├── Buffer.h
+│   ├── Callbacks.h
+│   ├── Channel.h
+│   ├── CurrentThread.h
+│   ├── EPollPoller.h
+│   ├── EventLoop.h
+│   ├── EventLoopThread.h
+│   ├── EventLoopThreadPool.h
+│   ├── InetAddress.h
+│   ├── Logger.h
+│   ├── Poller.h
+│   ├── Socket.h
+│   ├── TcpConnection.h
+│   ├── TcpServer.h
+│   ├── Thread.h
+│   ├── Timestamp.h
+│   └── nocopyable.h
+├── src/
+│   ├── Acceptor.cc
+│   ├── Buffer.cc
+│   ├── Channel.cc
+│   ├── CurrentThread.cc
+│   ├── DefaultPoller.cc
+│   ├── EPollPoller.cc
+│   ├── EventLoop.cc
+│   ├── EventLoopThread.cc
+│   ├── EventLoopThreadPool.cc
+│   ├── InetAddress.cc
+│   ├── Logger.cc
+│   ├── Poller.cc
+│   ├── Socket.cc
+│   ├── TcpConnection.cc
+│   ├── TcpServer.cc
+│   ├── Thread.cc
+│   └── Timestamp.cc
+└── example/
+    ├── Makefile
+    └── testserver.cc
+```
+
+---
+
+## 适合谁阅读
+
+这个仓库尤其适合下面几类读者：
+
+- 正在学习 C++ 网络编程的人
+- 想理解 muduo 设计思想的人
+- 想自己实现一个 Reactor 框架骨架的人
+- 想把 `epoll + 线程池 + 回调分发` 串成完整调用链的人
+
+如果你是第一次阅读这类项目，推荐按下面顺序看源码：
+
+1. `EventLoop`
+2. `Channel`
+3. `Poller / EPollPoller`
+4. `Acceptor`
+5. `TcpConnection`
+6. `TcpServer`
+7. `EventLoopThread / EventLoopThreadPool`
+8. `Buffer`
+
+---
+
+## 当前限制
+
+当前需要明确的边界：
+
+- `poll` 版本的 `Poller` 还没有真正实现，当前主实现是 `epoll`
+- 没有定时器模块
+- 没有 `TcpClient`
+- 没有异步日志模块
+- 根目录 `CMakeLists.txt` 当前只构建库，不自动构建 `example/`
+- 示例头文件路径更偏向“安装后使用”，本地直编可能需要调整
+
+因此，它更适合作为：
+
+- 学习项目
+- 架构理解项目
+- 二次开发基础项目
+
+而不是直接作为完整成熟的生产级网络库。
+
+---
+
+## 后续可扩展方向
+
+如果要继续把这个项目做强，比较自然的扩展路径包括：
+
+- 增加定时器与超时任务调度
+- 增加 `TcpClient`
+- 增加更完整的日志系统
+- 增加连接空闲检测
+- 增加更完善的测试和 benchmark
+- 优化构建系统，让 `example/` 直接纳入 CMake
+- 增加更标准的安装、导出头文件和包配置支持
+
+---
+
+## 总结
+
+`Frank_muduo` 的价值不在于功能数量，而在于它已经把一个 C++ Reactor 网络库最核心的骨架搭起来了：
+
+- 有事件循环
+- 有 `epoll`
+- 有主从 Reactor
+- 有连接抽象
+- 有线程池
+- 有缓冲区
+- 有跨线程唤醒
+
+如果你的目标是看懂网络库主链路、练习源码阅读，或者在此基础上继续做自己的网络框架，这个仓库已经是一个不错的起点。
